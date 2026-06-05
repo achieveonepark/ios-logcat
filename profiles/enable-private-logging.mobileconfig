@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key>
+            <string>com.apple.system.logging</string>
+            <key>PayloadIdentifier</key>
+            <string>dev.local.ios-logcat.logging.private</string>
+            <key>PayloadUUID</key>
+            <string>D9CDDDEE-C9DA-412B-AC52-E57C8AD3909A</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PayloadDisplayName</key>
+            <string>System Logging — Enable Private Data</string>
+            <key>PayloadDescription</key>
+            <string>os_log의 &lt;private&gt; 마스킹을 해제해 실제 값을 로그에 표시합니다. 디버깅 후 삭제하세요.</string>
+            <key>Enable-Private-Data</key>
+            <true/>
+            <key>System</key>
+            <dict>
+                <key>Enable-Private-Data</key>
+                <true/>
+            </dict>
+        </dict>
+    </array>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+    <key>PayloadIdentifier</key>
+    <string>dev.local.ios-logcat.enable-private-logging</string>
+    <key>PayloadUUID</key>
+    <string>70F32C99-CC85-40B2-85A8-5A3CFFCB9BAE</string>
+    <key>PayloadDisplayName</key>
+    <string>iOS LogCat — Private Data 로깅 허용</string>
+    <key>PayloadDescription</key>
+    <string>설치 후 syslog에서 &lt;private&gt; 대신 실제 값이 보입니다. 민감정보가 노출되므로 디버깅이 끝나면 [설정 → 일반 → VPN 및 기기 관리]에서 삭제하세요.</string>
+    <key>PayloadOrganization</key>
+    <string>iOS LogCat</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+</dict>
+</plist>
