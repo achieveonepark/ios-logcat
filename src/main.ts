@@ -24,6 +24,11 @@ interface ProcInfo {
   name: string;
 }
 
+interface DependencyStatus {
+  ok: boolean;
+  missingTools: string[];
+}
+
 type Cat = "error" | "warn" | "notice" | "info" | "debug" | "default";
 
 const ROW_H = 22;
@@ -542,6 +547,55 @@ function selectedDevice(): DeviceInfo | undefined {
   return devices.find((d) => d.udid === deviceSel.value);
 }
 
+function dependencyMessage(status: DependencyStatus): string {
+  const missing = status.missingTools.length
+    ? status.missingTools.join(", ")
+    : "libimobiledevice CLI";
+
+  return [
+    "iOS LogCat을 실행하려면 libimobiledevice가 필요합니다.",
+    "",
+    `누락된 명령어: ${missing}`,
+    "",
+    "macOS: brew install libimobiledevice",
+    "Windows: libimobiledevice-win32 설치 후 PATH에 추가",
+    "",
+    "설치 안내를 확인하고 계속하려면 확인을 누르세요.",
+    "취소하면 앱을 종료합니다.",
+  ].join("\n");
+}
+
+function setDependencyBlocked(status: DependencyStatus) {
+  setRunning(false);
+  toggleBtn.disabled = true;
+  procBtn.disabled = true;
+  deviceSel.disabled = true;
+  deviceSel.innerHTML = `<option value="">libimobiledevice 설치 필요</option>`;
+  stateLabel.textContent = "설치 필요";
+  errBox.textContent = `libimobiledevice 설치 필요: ${status.missingTools.join(", ")}`;
+  devLabel.textContent = "설치 후 앱을 다시 실행하세요";
+}
+
+function setDependencyReady() {
+  toggleBtn.disabled = false;
+  procBtn.disabled = false;
+  deviceSel.disabled = running;
+}
+
+async function ensureDependencies(): Promise<boolean> {
+  const status = await invoke<DependencyStatus>("check_dependencies");
+  if (status.ok) {
+    setDependencyReady();
+    return true;
+  }
+
+  setDependencyBlocked(status);
+  if (!window.confirm(dependencyMessage(status))) {
+    await invoke("quit_app");
+  }
+  return false;
+}
+
 async function loadDevices() {
   errBox.textContent = "";
   try {
@@ -605,7 +659,7 @@ async function stop() {
 }
 
 toggleBtn.addEventListener("click", () => (running ? stop() : start()));
-refreshBtn.addEventListener("click", loadDevices);
+refreshBtn.addEventListener("click", init);
 
 listen<LogLine[]>("log-batch", (e) => {
   if (errBox.textContent) errBox.textContent = "";
@@ -618,5 +672,15 @@ listen<string>("log-error", (e) => {
 listen("log-stopped", () => setRunning(false));
 
 // ---------------------------------------------------------------- init
-loadDevices();
-render();
+async function init() {
+  try {
+    if (await ensureDependencies()) {
+      await loadDevices();
+    }
+  } catch (e) {
+    errBox.textContent = String(e);
+  }
+  render();
+}
+
+init();

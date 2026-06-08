@@ -1,6 +1,6 @@
 [package]
 name = "ios-logcat"
-version = "0.1.0"
+version = "0.1.1"
 description = "iOS device syslog viewer (Logcat-style)"
 authors = ["you"]
 edition = "2021"

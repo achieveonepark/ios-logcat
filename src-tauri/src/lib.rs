@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -35,9 +36,78 @@ struct ProcInfo {
     name: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DependencyStatus {
+    ok: bool,
+    missing_tools: Vec<String>,
+}
+
 struct AppState {
     child: Mutex<Option<Child>>,
     seq: Arc<AtomicU64>,
+}
+
+const REQUIRED_TOOLS: &[&str] = &["idevice_id", "ideviceinfo", "idevicesyslog"];
+
+fn candidate_tool_paths(name: &str) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
+    }
+
+    let mut paths = Vec::new();
+    for dir in dirs {
+        #[cfg(windows)]
+        {
+            for ext in ["", ".exe", ".cmd", ".bat"] {
+                paths.push(dir.join(format!("{name}{ext}")));
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            paths.push(dir.join(name));
+        }
+    }
+    paths
+}
+
+fn resolve_tool(name: &str) -> Option<PathBuf> {
+    candidate_tool_paths(name)
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn mobiledevice_command(name: &str) -> Result<Command, String> {
+    resolve_tool(name)
+        .map(Command::new)
+        .ok_or_else(|| {
+            format!("{name} 실행 파일을 찾을 수 없습니다. libimobiledevice 설치 후 PATH에 추가하세요.")
+        })
+}
+
+#[tauri::command]
+fn check_dependencies() -> DependencyStatus {
+    let missing_tools = REQUIRED_TOOLS
+        .iter()
+        .filter(|tool| resolve_tool(tool).is_none())
+        .map(|tool| (*tool).to_string())
+        .collect::<Vec<_>>();
+
+    DependencyStatus {
+        ok: missing_tools.is_empty(),
+        missing_tools,
+    }
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 /// Parse a raw idevicesyslog line into structured fields.
@@ -142,7 +212,7 @@ fn parse_line(line: &str, seq: u64) -> LogLine {
 
 fn list_udids(network: bool) -> Result<Vec<String>, String> {
     let flag = if network { "-n" } else { "-l" };
-    let out = Command::new("idevice_id")
+    let out = mobiledevice_command("idevice_id")?
         .arg(flag)
         .output()
         .map_err(|e| format!("idevice_id 실행 실패: {e}. libimobiledevice가 설치돼 있나요?"))?;
@@ -157,7 +227,10 @@ fn list_udids(network: bool) -> Result<Vec<String>, String> {
 }
 
 fn device_name(udid: &str, network: bool) -> String {
-    let mut cmd = Command::new("ideviceinfo");
+    let mut cmd = match mobiledevice_command("ideviceinfo") {
+        Ok(cmd) => cmd,
+        Err(_) => return udid.to_string(),
+    };
     if network {
         cmd.arg("-n");
     }
@@ -199,7 +272,7 @@ fn list_devices() -> Result<Vec<DeviceInfo>, String> {
 
 #[tauri::command]
 fn list_processes(udid: Option<String>, network: bool) -> Result<Vec<ProcInfo>, String> {
-    let mut cmd = Command::new("idevicesyslog");
+    let mut cmd = mobiledevice_command("idevicesyslog")?;
     if let Some(u) = udid.as_ref().filter(|s| !s.is_empty()) {
         cmd.args(["-u", u]);
     }
@@ -249,7 +322,7 @@ fn start_log(
     // Tear down any existing session first.
     stop_log(state.clone())?;
 
-    let mut cmd = Command::new("idevicesyslog");
+    let mut cmd = mobiledevice_command("idevicesyslog")?;
     cmd.arg("--no-colors");
     if let Some(u) = udid.as_ref().filter(|s| !s.is_empty()) {
         cmd.args(["-u", u]);
@@ -364,8 +437,10 @@ pub fn run() {
             seq: Arc::new(AtomicU64::new(0)),
         })
         .invoke_handler(tauri::generate_handler![
+            check_dependencies,
             list_devices,
             list_processes,
+            quit_app,
             start_log,
             stop_log
         ])

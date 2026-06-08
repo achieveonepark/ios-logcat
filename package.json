@@ -1,6 +1,6 @@
 {
   "name": "ios-logcat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "iOS device syslog viewer (Logcat-style) built on idevicesyslog + Tauri",
   "type": "module",
   "scripts": {
