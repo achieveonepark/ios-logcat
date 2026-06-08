@@ -1,0 +1,444 @@
+name: codex apply v0.1.1 fixed
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/codex-apply-v0.1.1-fixed.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      commit_sha: ${{ steps.commit.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply v0.1.1 patch
+        run: |
+          git apply <<'PATCH'
+          diff --git a/README.md b/README.md
+          index 294e731..bbd1a41 100644
+          --- a/README.md
+          +++ b/README.md
+          @@ -16,6 +16,7 @@
+           - 🏷️ **레벨 필터** — ERROR / WARN / NOTICE / INFO / DEBUG / 기타 토글, 색상 구분
+           - 🔍 **검색** — 메시지·프로세스 텍스트, 정규식·대소문자 토글, 매칭 하이라이트
+           - 🧭 **프로세스 피커** — 실행 중인 프로세스(pidlist) 목록에서 클릭 → 자동 필터
+          +- 🧩 **의존성 안내** — 실행 시 `libimobiledevice` CLI 누락 여부를 확인하고 설치 안내 팝업 표시
+           - 📋 행 더블클릭으로 원본 로그 복사, 자동 따라가기(tail)
+          
+           ---
+          diff --git a/package-lock.json b/package-lock.json
+          index 444c541..38c200d 100644
+          --- a/package-lock.json
+          +++ b/package-lock.json
+          @@ -1,12 +1,12 @@
+           {
+             "name": "ios-logcat",
+          -  "version": "0.1.0",
+          +  "version": "0.1.1",
+             "lockfileVersion": 3,
+             "requires": true,
+             "packages": {
+               "": {
+                 "name": "ios-logcat",
+          -      "version": "0.1.0",
+          +      "version": "0.1.1",
+                 "dependencies": {
+                   "@tauri-apps/api": "^2.0.0"
+                 },
+          diff --git a/package.json b/package.json
+          index f7d70f3..1c1a066 100644
+          --- a/package.json
+          +++ b/package.json
+          @@ -1,6 +1,6 @@
+           {
+             "name": "ios-logcat",
+          -  "version": "0.1.0",
+          +  "version": "0.1.1",
+             "description": "iOS device syslog viewer (Logcat-style) built on idevicesyslog + Tauri",
+             "type": "module",
+             "scripts": {
+          diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+          index 6e992a1..32aff4e 100644
+          --- a/src-tauri/Cargo.lock
+          +++ b/src-tauri/Cargo.lock
+          @@ -1492,7 +1492,7 @@ dependencies = [
+          
+           [[package]]
+           name = "ios-logcat"
+          -version = "0.1.0"
+          +version = "0.1.1"
+           dependencies = [
+            "serde",
+            "serde_json",
+          diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+          index cfc06f2..10df001 100644
+          --- a/src-tauri/Cargo.toml
+          +++ b/src-tauri/Cargo.toml
+          @@ -1,6 +1,6 @@
+           [package]
+           name = "ios-logcat"
+          -version = "0.1.0"
+          +version = "0.1.1"
+           description = "iOS device syslog viewer (Logcat-style)"
+           authors = ["you"]
+           edition = "2021"
+          diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+          index ab1f6e3..f900645 100644
+          --- a/src-tauri/src/lib.rs
+          +++ b/src-tauri/src/lib.rs
+          @@ -1,4 +1,5 @@
+           use std::io::{BufRead, BufReader};
+          +use std::path::PathBuf;
+           use std::process::{Child, Command, Stdio};
+           use std::sync::atomic::{AtomicU64, Ordering};
+           use std::sync::mpsc::{self, RecvTimeoutError};
+          @@ -35,11 +36,80 @@ struct ProcInfo {
+               name: String,
+           }
+          
+          +#[derive(Clone, Serialize)]
+          +#[serde(rename_all = "camelCase")]
+          +struct DependencyStatus {
+          +    ok: bool,
+          +    missing_tools: Vec<String>,
+          +}
+          +
+           struct AppState {
+               child: Mutex<Option<Child>>,
+               seq: Arc<AtomicU64>,
+           }
+          
+          +const REQUIRED_TOOLS: &[&str] = &["idevice_id", "ideviceinfo", "idevicesyslog"];
+          +
+          +fn candidate_tool_paths(name: &str) -> Vec<PathBuf> {
+          +    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+          +        .map(|paths| std::env::split_paths(&paths).collect())
+          +        .unwrap_or_default();
+          +
+          +    #[cfg(target_os = "macos")]
+          +    {
+          +        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+          +        dirs.push(PathBuf::from("/usr/local/bin"));
+          +    }
+          +
+          +    let mut paths = Vec::new();
+          +    for dir in dirs {
+          +        #[cfg(windows)]
+          +        {
+          +            for ext in ["", ".exe", ".cmd", ".bat"] {
+          +                paths.push(dir.join(format!("{name}{ext}")));
+          +            }
+          +        }
+          +        #[cfg(not(windows))]
+          +        {
+          +            paths.push(dir.join(name));
+          +        }
+          +    }
+          +    paths
+          +}
+          +
+          +fn resolve_tool(name: &str) -> Option<PathBuf> {
+          +    candidate_tool_paths(name)
+          +        .into_iter()
+          +        .find(|path| path.is_file())
+          +}
+          +
+          +fn mobiledevice_command(name: &str) -> Result<Command, String> {
+          +    resolve_tool(name)
+          +        .map(Command::new)
+          +        .ok_or_else(|| {
+          +            format!("{name} 실행 파일을 찾을 수 없습니다. libimobiledevice 설치 후 PATH에 추가하세요.")
+          +        })
+          +}
+          +
+          +#[tauri::command]
+          +fn check_dependencies() -> DependencyStatus {
+          +    let missing_tools = REQUIRED_TOOLS
+          +        .iter()
+          +        .filter(|tool| resolve_tool(tool).is_none())
+          +        .map(|tool| (*tool).to_string())
+          +        .collect::<Vec<_>>();
+          +
+          +    DependencyStatus {
+          +        ok: missing_tools.is_empty(),
+          +        missing_tools,
+          +    }
+          +}
+          +
+          +#[tauri::command]
+          +fn quit_app(app: AppHandle) {
+          +    app.exit(0);
+          +}
+          +
+           /// Parse a raw idevicesyslog line into structured fields.
+           ///
+           /// Expected format:
+          @@ -142,7 +212,7 @@ fn parse_line(line: &str, seq: u64) -> LogLine {
+          
+           fn list_udids(network: bool) -> Result<Vec<String>, String> {
+               let flag = if network { "-n" } else { "-l" };
+          -    let out = Command::new("idevice_id")
+          +    let out = mobiledevice_command("idevice_id")?
+                   .arg(flag)
+                   .output()
+                   .map_err(|e| format!("idevice_id 실행 실패: {e}. libimobiledevice가 설치돼 있나요?"))?;
+          @@ -157,7 +227,10 @@ fn list_udids(network: bool) -> Result<Vec<String>, String> {
+           }
+          
+           fn device_name(udid: &str, network: bool) -> String {
+          -    let mut cmd = Command::new("ideviceinfo");
+          +    let mut cmd = match mobiledevice_command("ideviceinfo") {
+          +        Ok(cmd) => cmd,
+          +        Err(_) => return udid.to_string(),
+          +    };
+               if network {
+                   cmd.arg("-n");
+               }
+          @@ -199,7 +272,7 @@ fn list_devices() -> Result<Vec<DeviceInfo>, String> {
+          
+           #[tauri::command]
+           fn list_processes(udid: Option<String>, network: bool) -> Result<Vec<ProcInfo>, String> {
+          -    let mut cmd = Command::new("idevicesyslog");
+          +    let mut cmd = mobiledevice_command("idevicesyslog")?;
+               if let Some(u) = udid.as_ref().filter(|s| !s.is_empty()) {
+                   cmd.args(["-u", u]);
+               }
+          @@ -249,7 +322,7 @@ fn start_log(
+               // Tear down any existing session first.
+               stop_log(state.clone())?;
+          
+          -    let mut cmd = Command::new("idevicesyslog");
+          +    let mut cmd = mobiledevice_command("idevicesyslog")?;
+               cmd.arg("--no-colors");
+               if let Some(u) = udid.as_ref().filter(|s| !s.is_empty()) {
+                   cmd.args(["-u", u]);
+          @@ -364,8 +437,10 @@ pub fn run() {
+                       seq: Arc::new(AtomicU64::new(0)),
+                   })
+                   .invoke_handler(tauri::generate_handler![
+          +            check_dependencies,
+                       list_devices,
+                       list_processes,
+          +            quit_app,
+                       start_log,
+                       stop_log
+                   ])
+          diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+          index 65b76b2..bec09d5 100644
+          --- a/src-tauri/tauri.conf.json
+          +++ b/src-tauri/tauri.conf.json
+          @@ -1,7 +1,7 @@
+           {
+             "$schema": "https://schema.tauri.app/config/2",
+             "productName": "iOS LogCat",
+          -  "version": "0.1.0",
+          +  "version": "0.1.1",
+             "identifier": "com.achieveonepark.ioslogcat",
+             "build": {
+               "beforeDevCommand": "npm run dev",
+          diff --git a/src/main.ts b/src/main.ts
+          index 2013929..b0b2fe6 100644
+          --- a/src/main.ts
+          +++ b/src/main.ts
+          @@ -24,6 +24,11 @@ interface ProcInfo {
+             name: string;
+           }
+          
+          +interface DependencyStatus {
+          +  ok: boolean;
+          +  missingTools: string[];
+          +}
+          +
+           type Cat = "error" | "warn" | "notice" | "info" | "debug" | "default";
+          
+           const ROW_H = 22;
+          @@ -542,6 +547,55 @@ function selectedDevice(): DeviceInfo | undefined {
+             return devices.find((d) => d.udid === deviceSel.value);
+           }
+          
+          +function dependencyMessage(status: DependencyStatus): string {
+          +  const missing = status.missingTools.length
+          +    ? status.missingTools.join(", ")
+          +    : "libimobiledevice CLI";
+          +
+          +  return [
+          +    "iOS LogCat을 실행하려면 libimobiledevice가 필요합니다.",
+          +    "",
+          +    `누락된 명령어: ${missing}`,
+          +    "",
+          +    "macOS: brew install libimobiledevice",
+          +    "Windows: libimobiledevice-win32 설치 후 PATH에 추가",
+          +    "",
+          +    "설치 안내를 확인하고 계속하려면 확인을 누르세요.",
+          +    "취소하면 앱을 종료합니다.",
+          +  ].join("\n");
+          +}
+          +
+          +function setDependencyBlocked(status: DependencyStatus) {
+          +  setRunning(false);
+          +  toggleBtn.disabled = true;
+          +  procBtn.disabled = true;
+          +  deviceSel.disabled = true;
+          +  deviceSel.innerHTML = `<option value="">libimobiledevice 설치 필요</option>`;
+          +  stateLabel.textContent = "설치 필요";
+          +  errBox.textContent = `libimobiledevice 설치 필요: ${status.missingTools.join(", ")}`;
+          +  devLabel.textContent = "설치 후 앱을 다시 실행하세요";
+          +}
+          +
+          +function setDependencyReady() {
+          +  toggleBtn.disabled = false;
+          +  procBtn.disabled = false;
+          +  deviceSel.disabled = running;
+          +}
+          +
+          +async function ensureDependencies(): Promise<boolean> {
+          +  const status = await invoke<DependencyStatus>("check_dependencies");
+          +  if (status.ok) {
+          +    setDependencyReady();
+          +    return true;
+          +  }
+          +
+          +  setDependencyBlocked(status);
+          +  if (!window.confirm(dependencyMessage(status))) {
+          +    await invoke("quit_app");
+          +  }
+          +  return false;
+          +}
+          +
+           async function loadDevices() {
+             errBox.textContent = "";
+             try {
+          @@ -605,7 +659,7 @@ async function stop() {
+           }
+          
+           toggleBtn.addEventListener("click", () => (running ? stop() : start()));
+          -refreshBtn.addEventListener("click", loadDevices);
+          +refreshBtn.addEventListener("click", init);
+          
+           listen<LogLine[]>("log-batch", (e) => {
+             if (errBox.textContent) errBox.textContent = "";
+          @@ -618,5 +672,15 @@ listen<string>("log-error", (e) => {
+           listen("log-stopped", () => setRunning(false));
+          
+           // ---------------------------------------------------------------- init
+          -loadDevices();
+          -render();
+          +async function init() {
+          +  try {
+          +    if (await ensureDependencies()) {
+          +      await loadDevices();
+          +    }
+          +  } catch (e) {
+          +    errBox.textContent = String(e);
+          +  }
+          +  render();
+          +}
+          +
+          +init();
+          PATCH
+
+          node <<'NODE'
+          const fs = require('fs');
+          const path = '.github/workflows/release.yml';
+          const expression = '$' + '{{ github.ref_name }}';
+          const needle = `            ## iOS LogCat ${expression}\n\n`;
+          const replacement = `            ## iOS LogCat ${expression}\n\n            ## 변경 사항\n\n            - 앱 시작 시 \`libimobiledevice\` (\`idevicesyslog\`, \`idevice_id\`, \`ideviceinfo\`) 설치 여부를 확인합니다.\n            - 누락 시 설치 안내 팝업을 표시하고, 안내를 거부하면 앱을 종료합니다.\n\n`;
+          let content = fs.readFileSync(path, 'utf8');
+          if (!content.includes(needle)) {
+            throw new Error('release body insertion point not found');
+          }
+          content = content.replace(needle, replacement);
+          fs.writeFileSync(path, content);
+          NODE
+
+          rm -f .github/workflows/codex-apply-v0.1.1.yml .github/workflows/codex-apply-v0.1.1-fixed.yml
+
+      - name: Commit and tag v0.1.1
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add libimobiledevice startup check"
+          git tag -a v0.1.1 -m "iOS LogCat v0.1.1"
+          git push origin HEAD:main
+          git push origin v0.1.1
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+          - platform: windows-latest
+            args: ""
+            rust-targets: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v0.1.1
+          releaseName: "iOS LogCat v0.1.1"
+          releaseBody: |
+            ## iOS LogCat v0.1.1
+
+            ## 변경 사항
+
+            - 앱 시작 시 `libimobiledevice` (`idevicesyslog`, `idevice_id`, `ideviceinfo`) 설치 여부를 확인합니다.
+            - 누락 시 설치 안내 팝업을 표시하고, 안내를 거부하면 앱을 종료합니다.
+
+            아래 **Assets**에서 OS에 맞는 설치파일을 받으세요.
+
+            | OS | 파일 |
+            |----|------|
+            | macOS (Apple Silicon + Intel) | `.dmg` |
+            | Windows | `.msi` 또는 `.exe` (NSIS) |
+
+            > ⚠️ 코드 서명이 안 돼 있어 첫 실행 시 Gatekeeper / SmartScreen 경고가 뜰 수 있습니다.
+            > macOS: 우클릭 → 열기 · Windows: "추가 정보 → 실행".
+
+            사전 요구사항: [libimobiledevice](https://libimobiledevice.org) (`idevicesyslog` 제공). README 참고.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
